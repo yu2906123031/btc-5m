@@ -1,0 +1,13 @@
+﻿.env
+.env.*
+!.env.example
+backtest-data/
+.trade-history.json
+.strategy-config.json
+.polymarket-creds.json
+node_modules/
+logs/
+
+.pytest_cache/
+.qwen/
+scratch/
