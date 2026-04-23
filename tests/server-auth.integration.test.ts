@@ -197,3 +197,28 @@ test("auto-derived local browser access keeps public config token flag off", asy
   const { stderr } = server.getLogs();
   assert.equal(stderr.includes("POLYMARKET_PRIVATE_KEY invalid"), false);
 });
+
+test("disabled live trading tolerates invalid placeholder private key", async (t) => {
+  const server = await startServer({
+    APP_API_TOKEN: "auto",
+    POLYMARKET_PRIVATE_KEY: "0xyour_private_key",
+  });
+  t.after(async () => {
+    await stopServer(server.child);
+  });
+
+  const readinessRes = await fetch(`${server.baseUrl}/api/readiness`, {
+    headers: {
+      Origin: server.baseUrl,
+    },
+  });
+  assert.equal(readinessRes.status, 503);
+
+  const readiness = await readinessRes.json() as { blockers: string[] };
+  assert.equal(Array.isArray(readiness.blockers), true);
+  assert.equal(readiness.blockers.includes("LIVE_TRADING_ENABLED is false"), true);
+  assert.equal(readiness.blockers.includes("POLYMARKET_PRIVATE_KEY format is invalid"), true);
+
+  const { stderr } = server.getLogs();
+  assert.equal(stderr.includes("POLYMARKET_PRIVATE_KEY invalid"), false);
+});

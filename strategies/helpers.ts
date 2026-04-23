@@ -1,9 +1,10 @@
-/**
- * 策略模块共享工具函数
- * 用于减少策略间的代码重复
- */
-
 import type { StrategyDirection, ExitSignal } from "./types.js";
+
+export interface VolatilityWindowState {
+  samples: number[];
+}
+
+const DEFAULT_ATR_MULTIPLIER = 1.5;
 
 /**
  * 检查是否触发固定差价止损
@@ -97,4 +98,45 @@ export function updateNeutralCooldown(
  */
 export function cloneState<T extends Record<string, unknown>>(state: T): T {
   return { ...state };
+}
+
+export function pushDiffSample(state: VolatilityWindowState, diff: number, maxSamples: number): void {
+  state.samples.push(Math.abs(diff));
+  if (state.samples.length > maxSamples) {
+    state.samples.splice(0, state.samples.length - maxSamples);
+  }
+}
+
+export function computeAtrStopDistance(
+  samples: number[],
+  fallback: number,
+  multiplier: number = DEFAULT_ATR_MULTIPLIER,
+): number {
+  const valid = samples.filter((value) => Number.isFinite(value) && value >= 0);
+  if (valid.length === 0) return fallback;
+  const meanAbsDiff = valid.reduce((sum, value) => sum + value, 0) / valid.length;
+  return Math.max(fallback, meanAbsDiff * multiplier);
+}
+
+export function checkAtrStopLoss(
+  diff: number,
+  direction: StrategyDirection,
+  entryDiff: number,
+  atrStopDistance: number,
+): ExitSignal {
+  if (!Number.isFinite(diff) || !Number.isFinite(entryDiff) || !Number.isFinite(atrStopDistance)) {
+    return null;
+  }
+
+  const threshold = direction === "up"
+    ? entryDiff - atrStopDistance
+    : entryDiff + atrStopDistance;
+
+  if (direction === "up" && diff <= threshold) {
+    return { signal: "sl", reason: "atr stop loss" };
+  }
+  if (direction === "down" && diff >= threshold) {
+    return { signal: "sl", reason: "atr stop loss" };
+  }
+  return null;
 }

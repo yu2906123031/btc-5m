@@ -23,7 +23,7 @@
 ## Important Config
 
 - `APP_BIND_HOST=127.0.0.1`
-- `APP_API_TOKEN=<random-long-secret>`
+- `APP_API_TOKEN=auto` derives a stable local API token from the private key.
 - `POLYMARKET_PRIVATE_KEY` must be a valid `0x` + 64 hex private key.
 
 ## Remaining Risks / Follow-up

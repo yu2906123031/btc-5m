@@ -1,8 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
+import axios from "axios";
+import { request } from "@polymarket/clob-client/dist/http-helpers/index.js";
 
 import {
+  applyAxiosProxyDefaults,
+  buildProxyAgent,
   describeOutboundError,
   isLoopbackHostname,
   isLoopbackProxyUrl,
@@ -35,6 +39,47 @@ test("describeOutboundError includes nested causes", () => {
   const root = new Error("connect ECONNREFUSED 127.0.0.1:10809");
   const wrapped = new Error("fetch failed", { cause: root });
   assert.equal(describeOutboundError(wrapped), "fetch failed | connect ECONNREFUSED 127.0.0.1:10809");
+});
+
+test("buildProxyAgent supports socks5 proxy URLs", () => {
+  const agent = buildProxyAgent("socks5://user:password@example-proxy.local:1080");
+  assert.ok(agent);
+  assert.equal(typeof agent, "object");
+});
+
+test("applyAxiosProxyDefaults makes clob-client request inherit proxy agents", async () => {
+  const proxyAgent = buildProxyAgent("socks5://user:password@example-proxy.local:1080");
+
+  const prevAdapter = axios.defaults.adapter;
+  const prevHttpAgent = axios.defaults.httpAgent;
+  const prevHttpsAgent = axios.defaults.httpsAgent;
+
+  try {
+    let seenHttpAgent: unknown;
+    let seenHttpsAgent: unknown;
+
+    axios.defaults.adapter = async (config) => {
+      seenHttpAgent = config.httpAgent;
+      seenHttpsAgent = config.httpsAgent;
+      return {
+        data: { ok: true },
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        config,
+      };
+    };
+
+    applyAxiosProxyDefaults(axios, proxyAgent);
+    await request("https://example.com/test", "POST", { "X-Test": "1" }, { ok: 1 }, { q: "x" });
+
+    assert.equal(seenHttpAgent, proxyAgent);
+    assert.equal(seenHttpsAgent, proxyAgent);
+  } finally {
+    axios.defaults.adapter = prevAdapter;
+    axios.defaults.httpAgent = prevHttpAgent;
+    axios.defaults.httpsAgent = prevHttpsAgent;
+  }
 });
 
 test("probeLoopbackProxyAvailability detects live and dead local proxy ports", async () => {

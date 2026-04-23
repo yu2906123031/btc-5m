@@ -62,24 +62,37 @@ const FAIR_PROB_RAW: Array<[number, string, number]> = [
   [95, "30-60", 100], [95, "60-120", 98], [95, "120-180", 92], [95, "180-240", 92],
 ];
 
-const FAIR_PROB_MAP = new Map<string, number>();
+const REM_BIN_LABELS = ["30-60", "60-120", "120-180", "180-240"] as const;
+const DIFF_BUCKETS = FAIR_PROB_RAW
+  .map(([diff]) => diff)
+  .filter((diff, index, list) => list.indexOf(diff) === index)
+  .sort((a, b) => a - b);
+const DIFF_INDEX = new Map<number, number>(DIFF_BUCKETS.map((diff, index) => [diff, index]));
+const FAIR_PROB_TABLE: Array<Array<number | null>> = DIFF_BUCKETS.map(() =>
+  Array.from({ length: REM_BIN_LABELS.length }, () => null),
+);
+
 for (const [diff, remBin, prob] of FAIR_PROB_RAW) {
-  FAIR_PROB_MAP.set(`${diff},${remBin}`, prob);
+  const diffIndex = DIFF_INDEX.get(diff);
+  const remIndex = REM_BIN_LABELS.indexOf(remBin as (typeof REM_BIN_LABELS)[number]);
+  if (diffIndex == null || remIndex < 0) continue;
+  FAIR_PROB_TABLE[diffIndex][remIndex] = prob;
 }
 
-function getRemBin(rem: number): string | null {
-  if (rem >= 180 && rem < 240) return "180-240";
-  if (rem >= 120 && rem < 180) return "120-180";
-  if (rem >= 60 && rem < 120) return "60-120";
-  if (rem >= 30 && rem < 60) return "30-60";
+function getRemIndex(rem: number): number | null {
+  if (rem >= 180 && rem < 240) return 3;
+  if (rem >= 120 && rem < 180) return 2;
+  if (rem >= 60 && rem < 120) return 1;
+  if (rem >= 30 && rem < 60) return 0;
   return null;
 }
 
 function getFairProb(diff: number, rem: number): number | null {
   const diffBucket = Math.round(diff / 5) * 5;
-  const remBin = getRemBin(rem);
-  if (!remBin) return null;
-  return FAIR_PROB_MAP.get(`${diffBucket},${remBin}`) ?? null;
+  const diffIndex = DIFF_INDEX.get(diffBucket);
+  const remIndex = getRemIndex(rem);
+  if (diffIndex == null || remIndex == null) return null;
+  return FAIR_PROB_TABLE[diffIndex]?.[remIndex] ?? null;
 }
 
 interface S5State {
@@ -147,7 +160,7 @@ export class S5ProbChase implements IStrategy {
     return null;
   }
 
-  onEntryFilled(ctx: StrategyTickContext): void {
+  onEntryFilled(ctx: StrategyTickContext, _direction: StrategyDirection): void {
     this.s.entryTs = ctx.now;
   }
 

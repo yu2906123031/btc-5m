@@ -145,3 +145,132 @@ test("S2 force exits in the last 10 seconds", () => {
 
   assert.deepEqual(exit, { signal: "tp", reason: "force exit with 10s remaining" });
 });
+
+test("S2 rejects overheated breakouts when probability is already too extended", () => {
+  const strategy = new S2Regular();
+
+  assert.equal(
+    tick(strategy, {
+      rem: 205,
+      upPct: 44,
+      dnPct: 56,
+      diff: 4.5,
+      now: 1_000,
+      prevUpPct: 44,
+    }),
+    null,
+  );
+
+  assert.equal(
+    tick(strategy, {
+      rem: 200,
+      upPct: 88,
+      dnPct: 12,
+      diff: 57,
+      now: 4_000,
+      prevUpPct: 44,
+    }),
+    null,
+  );
+
+  const entry = tick(strategy, {
+    rem: 198,
+    upPct: 79,
+    dnPct: 21,
+    diff: 59,
+    now: 5_000,
+    prevUpPct: 88,
+  });
+
+  assert.equal(entry, null);
+});
+
+test("S2 exits long positions on probability pullback after late-stage extension", () => {
+  const strategy = new S2Regular();
+
+  strategy.onEntryFilled?.(
+    {
+      rem: 170,
+      upPct: 70,
+      dnPct: 30,
+      diff: 43,
+      now: 1_000,
+      prevUpPct: 68,
+    },
+    "up",
+  );
+
+  assert.equal(
+    strategy.checkExit(
+      {
+        rem: 150,
+        upPct: 93,
+        dnPct: 7,
+        diff: 58,
+        now: 3_000,
+        prevUpPct: 91,
+      },
+      "up",
+    ),
+    null,
+  );
+
+  const exit = strategy.checkExit(
+    {
+      rem: 145,
+      upPct: 84,
+      dnPct: 16,
+      diff: 50,
+      now: 4_000,
+      prevUpPct: 93,
+    },
+    "up",
+  );
+
+  assert.deepEqual(exit, { signal: "tp", reason: "probability pullback from 93%" });
+});
+
+test("S2 widens stop using volatility after a valid entry instead of fixed diff support", () => {
+  const strategy = new S2Regular();
+
+  strategy.onEntryFilled?.(
+    {
+      rem: 180,
+      upPct: 63,
+      dnPct: 37,
+      diff: 42,
+      now: 1_000,
+      prevUpPct: 61,
+    },
+    "up",
+  );
+
+  assert.equal(
+    strategy.checkExit(
+      {
+        rem: 170,
+        upPct: 61,
+        dnPct: 39,
+        diff: 26,
+        now: 3_000,
+        prevUpPct: 63,
+      },
+      "up",
+    ),
+    null,
+  );
+
+  const exit = strategy.checkExit(
+    {
+      rem: 165,
+      upPct: 59,
+      dnPct: 41,
+      diff: -8,
+      now: 4_000,
+      prevUpPct: 61,
+    },
+    "up",
+  );
+
+  assert.deepEqual(exit, { signal: "sl", reason: "atr stop loss" });
+});

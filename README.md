@@ -1,4 +1,4 @@
-﻿# BTC 5m Dashboard
+# BTC 5m Dashboard
 
 A local-first Polymarket BTC 5-minute trading dashboard with live market data, manual order entry, claim support, and strategy automation.
 

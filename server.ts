@@ -7,7 +7,6 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from "fs";
 import axios from "axios";
-import { HttpsProxyAgent } from "https-proxy-agent";
 import {
   Contract,
   Interface,
@@ -30,11 +29,16 @@ import {
   shouldPublicConfigRequireToken,
 } from "./auth.js";
 import {
+  applyAxiosProxyDefaults,
+  buildProxyAgent,
   describeOutboundError,
   isLoopbackProxyUrl,
   probeLoopbackProxyAvailability,
   shouldBypassProxyAfterError,
 } from "./outbound.js";
+import { logStrategyRuntimeEvent } from "./runtime-events.js";
+import { chooseMarketOrderType } from "./order-execution.js";
+import { canExecuteMarketBuy } from "./trade-guard.js";
 import { initStrategies, getAllStrategies, getStrategy, getAllDescriptions } from "./strategies/registry.js";
 import type { StrategyNumber, StrategyDirection, StrategyLifecycleState, StrategyKey } from "./strategies/types.js";
 import { ALL_STRATEGY_KEYS } from "./strategies/types.js";
@@ -472,7 +476,8 @@ delete process.env.http_proxy;
 delete process.env.ALL_PROXY;
 delete process.env.all_proxy;
 
-const WS_PROXY_AGENT = OUTBOUND_PROXY_URL ? new HttpsProxyAgent(OUTBOUND_PROXY_URL) : undefined;
+const WS_PROXY_AGENT = OUTBOUND_PROXY_URL ? buildProxyAgent(OUTBOUND_PROXY_URL) : undefined;
+applyAxiosProxyDefaults(axios, WS_PROXY_AGENT);
 const DIRECT_AXIOS = axios.create();
 const PROXIED_AXIOS = WS_PROXY_AGENT
   ? axios.create({
@@ -498,7 +503,7 @@ function isOutboundProxyActive(): boolean {
   return !!OUTBOUND_PROXY_URL && !outboundProxyBypassed;
 }
 
-function getOutboundWsOptions(): { agent?: HttpsProxyAgent<string> } {
+function getOutboundWsOptions(): { agent?: ReturnType<typeof buildProxyAgent> } {
   return isOutboundProxyActive() && WS_PROXY_AGENT
     ? { agent: WS_PROXY_AGENT }
     : {};
@@ -713,7 +718,7 @@ function isValidPrivateKey(value: string): boolean {
 }
 
 function assertRuntimeConfig(): void {
-  if (PRIVATE_KEY && !isValidPrivateKey(PRIVATE_KEY)) {
+  if (LIVE_TRADING_ENABLED && PRIVATE_KEY && !isValidPrivateKey(PRIVATE_KEY)) {
     throw new Error("POLYMARKET_PRIVATE_KEY invalid: expected 0x + 64 hex chars");
   }
 }
@@ -3251,7 +3256,7 @@ async function placeOrder(input: PlaceOrderInput): Promise<OrderExecutionResult>
       { tokenID: tokenId, side: side === "buy" ? Side.BUY : Side.SELL, amount: normalizedAmount, price: normalizedWorstPrice },
       { tickSize, negRisk: false }
     );
-    const result = await clobClient!.postOrder(signedOrder, OrderType.FOK);
+    const result = await clobClient!.postOrder(signedOrder, chooseMarketOrderType(side, normalizedAmount));
     const rawStatus = result?.status ?? "unknown";
     const orderError = extractOrderError(result);
 
@@ -3318,6 +3323,13 @@ async function strategyBuy(direction: StrategyDirection, amount: number): Promis
 
   if (!orderResult.success) {
     console.log(`[Strategy${strategyRuntime.activeStrategy ?? ""}] buy failed: ${orderResult.errorMessage || "order failed"}`);
+    logStrategyRuntimeEvent("buy_failed", {
+      strategy: strategyRuntime.activeStrategy ? `S${strategyRuntime.activeStrategy}` : null,
+      direction,
+      amount,
+      error: orderResult.errorMessage || "order failed",
+      liveTradingEnabled: LIVE_TRADING_ENABLED,
+    });
     strategyRuntime.buyLockUntil = 0;
     strategyRuntime.state = "SCANNING";
     strategyRuntime.activeStrategy = null;
@@ -3351,6 +3363,13 @@ async function strategySell(direction: StrategyDirection, exitReason?: string): 
 
   if (!orderResult.success) {
     console.log(`[Strategy${strategyRuntime.activeStrategy ?? ""}] sell failed: ${orderResult.errorMessage || "order failed"}`);
+    logStrategyRuntimeEvent("sell_failed", {
+      strategy: strategyRuntime.activeStrategy ? `S${strategyRuntime.activeStrategy}` : null,
+      direction,
+      reason: exitReason,
+      error: orderResult.errorMessage || "order failed",
+      liveTradingEnabled: LIVE_TRADING_ENABLED,
+    });
     strategyRuntime.waitVerifyAfterSell = false;
     strategyRuntime.state = "HOLDING";
     broadcastState();
@@ -3527,12 +3546,27 @@ function runStrategyTick(): void {
       finalize();
       return;
     }
+    const { asks } = getOrderBookSnapshot();
+    const bestBid = Number(state.bestBid);
+    const bestAsk = Number(state.bestAsk);
+    if (!canExecuteMarketBuy({ amount: buyAmount, bestBid, bestAsk, asks })) {
+      console.log(`[Strategy${entry.strategy}] entry skipped due to thin/wide order book dir=${entry.dir} amount=${buyAmount} bid=${state.bestBid} ask=${state.bestAsk}`);
+      finalize();
+      return;
+    }
     strategyRuntime.roundEntryCount++;
     strategyRuntime.activeStrategy = entry.strategy;
     strategyRuntime.direction = entry.dir;
     strategyRuntime.buyAmount = buyAmount;
     strategyRuntime.state = "BUYING";
     console.log(`[Strategy${entry.strategy}] entry triggered (${strategyRuntime.roundEntryCount}/${strategyConfig.maxRoundEntries}) dir=${entry.dir} amount=${buyAmount}`);
+    logStrategyRuntimeEvent("entry_triggered", {
+      strategy: `S${entry.strategy}`,
+      direction: entry.dir,
+      amount: buyAmount,
+      roundEntry: `${strategyRuntime.roundEntryCount}/${strategyConfig.maxRoundEntries}`,
+      liveTradingEnabled: LIVE_TRADING_ENABLED,
+    });
     broadcastState();
     void strategyBuy(entry.dir, buyAmount);
     finalize();
@@ -3544,6 +3578,12 @@ function runStrategyTick(): void {
       strategyRuntime.buyLockUntil = 0;
       strategyRuntime.state = "HOLDING";
       console.log(`[Strategy${strategyRuntime.activeStrategy ?? ""}] buy fill confirmed`);
+      logStrategyRuntimeEvent("buy_fill_confirmed", {
+        strategy: strategyRuntime.activeStrategy ? `S${strategyRuntime.activeStrategy}` : null,
+        direction: strategyRuntime.direction,
+        amount: strategyRuntime.buyAmount,
+        liveTradingEnabled: LIVE_TRADING_ENABLED,
+      });
       if (strategyRuntime.activeStrategy && strategyRuntime.direction) {
         const activeStrat = getStrategy(strategyKeyOf(strategyRuntime.activeStrategy));
         if (activeStrat?.onEntryFilled) {
@@ -3614,6 +3654,13 @@ function runStrategyTick(): void {
     const exit = checkExit(ctx);
     if (exit && strategyRuntime.direction) {
       console.log(`[Strategy${strategyRuntime.activeStrategy ?? ""}] ${exit.signal} triggered: ${exit.reason}`);
+      logStrategyRuntimeEvent("sell_signal_triggered", {
+        strategy: strategyRuntime.activeStrategy ? `S${strategyRuntime.activeStrategy}` : null,
+        direction: strategyRuntime.direction,
+        signal: exit.signal,
+        reason: exit.reason,
+        liveTradingEnabled: LIVE_TRADING_ENABLED,
+      });
       strategyRuntime.state = "SELLING";
       broadcastState();
       void strategySell(strategyRuntime.direction, exit.reason);
@@ -3628,6 +3675,12 @@ function runStrategyTick(): void {
         strategyRuntime.waitVerifyAfterSell = false;
         strategyRuntime.cleanupAfterVerify = false;
         console.log(`[Strategy${strategyRuntime.activeStrategy ?? ""}] sell fill confirmed, cycle complete`);
+        logStrategyRuntimeEvent("sell_fill_confirmed", {
+          strategy: strategyRuntime.activeStrategy ? `S${strategyRuntime.activeStrategy}` : null,
+          direction: strategyRuntime.direction,
+          remainingPosition: Number(currentPosition.toFixed(4)),
+          liveTradingEnabled: LIVE_TRADING_ENABLED,
+        });
         transitionToDone();
         finalize();
         return;

@@ -43,7 +43,7 @@ export class S4Reversal implements IStrategy {
   checkEntry(ctx: StrategyTickContext): EntrySignal | null {
     const { rem, upPct, prevUpPct } = ctx;
     if (upPct == null || prevUpPct == null) return null;
-    if (rem > WINDOW_MAX_REMAINING || rem < WINDOW_MIN_REMAINING) return null;
+    if (rem > WINDOW_MAX_REMAINING || rem <= WINDOW_MIN_REMAINING) return null;
     if (prevUpPct < ENTRY_UP_FROM && upPct > ENTRY_UP_TO) return { direction: "up" };
     if (prevUpPct > ENTRY_DN_FROM && upPct < ENTRY_DN_TO) return { direction: "down" };
     return null;

@@ -1,4 +1,24 @@
 import { createConnection } from "node:net";
+import type { AxiosStatic } from "axios";
+import { HttpsProxyAgent } from "https-proxy-agent";
+import { SocksProxyAgent } from "socks-proxy-agent";
+
+export type OutboundProxyAgent = HttpsProxyAgent<string> | SocksProxyAgent;
+
+export function buildProxyAgent(proxyUrl: string): OutboundProxyAgent {
+  const protocol = new URL(proxyUrl).protocol.toLowerCase();
+  if (protocol === "socks:" || protocol === "socks4:" || protocol === "socks4a:" || protocol === "socks5:" || protocol === "socks5h:") {
+    return new SocksProxyAgent(proxyUrl);
+  }
+  return new HttpsProxyAgent(proxyUrl);
+}
+
+export function applyAxiosProxyDefaults(axiosStatic: AxiosStatic, proxyAgent?: OutboundProxyAgent): void {
+  if (!proxyAgent) return;
+  axiosStatic.defaults.proxy = false;
+  axiosStatic.defaults.httpAgent = proxyAgent;
+  axiosStatic.defaults.httpsAgent = proxyAgent;
+}
 
 function normalizeHostname(hostname: string): string {
   const trimmed = hostname.trim().toLowerCase();
